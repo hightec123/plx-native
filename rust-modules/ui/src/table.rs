@@ -971,12 +971,15 @@ impl TableView {
                 }
             }
             for row in section.rows.iter().filter(|r| r.is_note()) {
-                // a note WRAPS, so it fits unless one unbreakable word is wider than its column
+                // Server notes (e.g. filenames) also break oversized words at character boundaries.
                 let budget = Self::note_column_w(frame_w) * headroom;
-                let widest = row
-                    .label
-                    .split(|c: char| c.is_whitespace() && c != '\u{a0}')
-                    .filter(|w| !w.is_empty())
+                let units: Vec<&str> = if row.label_origin == Origin::Server {
+                    row.label.char_indices().map(|(i, c)| &row.label[i..i + c.len_utf8()]).collect()
+                } else {
+                    row.label.split(|c: char| c.is_whitespace() && c != '\u{a0}')
+                        .filter(|w| !w.is_empty()).collect()
+                };
+                let widest = units.into_iter()
                     .map(|w| (measure.width_str(w, theme::size::CAPTION, false), w))
                     .fold((0.0f32, ""), |a, b| if b.0 > a.0 { b } else { a });
                 if widest.0 > budget {
@@ -1053,9 +1056,10 @@ impl TableView {
     pub fn fit_notes(&self, frame_w: f32, measure: &dyn plx_machine::machine::Measure) {
         let w = Self::note_column_w(frame_w);
         for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| r.is_note()) {
-            let lines = crate::text_view::TextView::new(&row.label, theme::size::CAPTION, theme::TEXT_TERTIARY)
-                .with_measure(measure)
-                .line_count(w);
+            let view = crate::text_view::TextView::new(&row.label, theme::size::CAPTION, theme::TEXT_TERTIARY)
+                .with_measure(measure);
+            let view = if row.label_origin == Origin::Server { view.break_long_words() } else { view };
+            let lines = view.line_count(w);
             row.note_lines.set(lines.clamp(1, u8::MAX as usize) as u8);
         }
     }
@@ -1596,6 +1600,7 @@ impl TableView {
                 let view = crate::text_view::TextView::new(&row.label, nsz, dimc)
                     .with_measure(measure)
                     .leading(NOTE_LEADING);
+                let view = if row.label_origin == Origin::Server { view.break_long_words() } else { view };
                 let w = (text_right - x).max(0.0);
                 let lines = view.line_count(w);
                 // centre the INK (first cap-top to last baseline), as the one-line note was

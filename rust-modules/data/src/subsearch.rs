@@ -29,6 +29,8 @@
 //!
 //! `ServerId` and the rating key are captured at the spawn site and the `&'static Client` resolved
 //! there (`plex/CLAUDE.md`'s rule), so a worker cannot search a server the viewer has left.
+pub mod release_match;
+
 use plx_plex::plex::subtitles::{SubtitleAddOutcome, SubtitleSearchOutcome};
 use plx_plex::plex::{Client, ServerId, SubtitleSearch};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -58,7 +60,9 @@ pub struct SubHit {
     pub language_code: String,
     pub codec: String,
     /// Plex's legacy `score` field now carries OpenSubtitles download count, not match quality.
-    pub score: i64,
+    pub downloads: i64,
+    /// Local release-name estimate out of 100; absent when either name is unusable.
+    pub match_score: Option<u8>,
     pub hearing_impaired: bool,
     pub forced: bool,
 }
@@ -125,9 +129,9 @@ impl DownloadPhase {
 /// Every mutation of the subtitle-search model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubSearchCmd {
-    /// Open (or keep) the search for one item. Idempotent for the same item and language, so the
+    /// Open (or keep) the search for one item. Idempotent for the same item, filename and language, so the
     /// menu re-opening shows the answer already paid for instead of searching again.
-    Open { sid: ServerId, rk: String, lang: String },
+    Open { sid: ServerId, rk: String, lang: String, filename: String },
     /// Search again in another language. Refused while a download is busy.
     SetLanguage(String),
     /// Install hit `hit` of the result set published under generation `gen`. Refused when that set
@@ -144,6 +148,7 @@ pub enum SubSearchCmd {
 struct Open {
     sid: ServerId,
     rk: String,
+    filename: String,
     /// The folded 2-letter code; empty only when the fold failed.
     lang: String,
     status: SearchStatus,
@@ -153,8 +158,8 @@ struct Open {
 }
 
 impl Open {
-    fn new(sid: ServerId, rk: String, lang: &str) -> Self {
-        let mut open = Open { sid, rk, lang: String::new(), status: SearchStatus::Searching,
+    fn new(sid: ServerId, rk: String, lang: &str, filename: String) -> Self {
+        let mut open = Open { sid, rk, filename, lang: String::new(), status: SearchStatus::Searching,
             failure: None, hits: Vec::new(), download: DownloadPhase::None };
         open.search_for(lang);
         open
@@ -281,15 +286,15 @@ impl SubSearchState {
 
     pub fn run(&mut self, adapter: &SubSearchAdapter, cmd: SubSearchCmd) -> bool {
         match cmd {
-            SubSearchCmd::Open { sid, rk, lang } => {
+            SubSearchCmd::Open { sid, rk, lang, filename } => {
                 if let Some(open) = self.open.as_ref()
-                    .filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, &rk))) {
+                    .filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, &rk)) && o.filename == filename) {
                     // the same item: keep the answer unless the language really changed
                     if fold_language(&lang).unwrap_or_default() == open.lang { return false; }
                     return self.run(adapter, SubSearchCmd::SetLanguage(lang));
                 }
                 self.supersede(adapter);
-                self.open = Some(Open::new(sid, rk, &lang));
+                self.open = Some(Open::new(sid, rk, &lang, filename));
                 true
             }
             SubSearchCmd::SetLanguage(lang) => {
@@ -389,7 +394,8 @@ impl SubSearchState {
             Landing::Search(result) => {
                 if open.status != SearchStatus::Searching { return false; }
                 match result {
-                    Ok(hits) => {
+                    Ok(mut hits) => {
+                        rank_hits(&mut hits, &open.filename);
                         open.hits = hits;
                         open.status = SearchStatus::Ready;
                         open.failure = None;
@@ -539,7 +545,7 @@ fn subtitle_rows(client: &Client, rk: &str) -> Option<Vec<StreamRow>> {
 }
 
 /// Project the agent's rows into hits, highest download count first. The sort is STABLE, so the server's own
-/// order survives among equal scores. A row without a key cannot be downloaded and is dropped.
+/// order survives among equal download counts. A row without a key cannot be downloaded and is dropped.
 pub fn hits_of(rows: &[plx_plex::plex::Stream]) -> Vec<SubHit> {
     let mut hits: Vec<SubHit> = rows.iter()
         .filter(|s| s.stream_type == 3 && !s.key.is_empty())
@@ -550,13 +556,29 @@ pub fn hits_of(rows: &[plx_plex::plex::Stream]) -> Vec<SubHit> {
             language: s.language.clone(),
             language_code: s.language_code.clone(),
             codec: s.codec.clone(),
-            score: s.score,
+            downloads: s.score,
+            match_score: None,
             hearing_impaired: s.hearing_impaired != 0,
             forced: s.forced != 0,
         })
         .collect();
-    hits.sort_by(|a, b| b.score.cmp(&a.score));
+    hits.sort_by(|a, b| b.downloads.cmp(&a.downloads));
     hits
+}
+
+/// Rank once when a search lands, before indices become download identities. Never sort in the
+/// view: the displayed row, download key and install status must continue to refer to one hit.
+fn rank_hits(hits: &mut [SubHit], filename: &str) {
+    for hit in hits.iter_mut() {
+        hit.match_score = if hit.title.trim().eq_ignore_ascii_case(hit.language.trim())
+            || hit.title.trim().eq_ignore_ascii_case(hit.language_code.trim()) {
+            None
+        } else {
+            release_match::score(filename, &hit.title)
+        };
+    }
+    hits.sort_by(|a, b| b.match_score.cmp(&a.match_score)
+        .then_with(|| b.downloads.cmp(&a.downloads)));
 }
 
 struct Mail { gen: u32, what: Landing }
@@ -598,7 +620,7 @@ mod tests {
     fn hit(key: &str, title: &str, score: i64) -> SubHit {
         SubHit { key: key.into(), title: title.into(), provider: "OpenSubtitles".into(),
             language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(),
-            score, hearing_impaired: false, forced: false }
+            downloads: score, match_score: None, hearing_impaired: false, forced: false }
     }
 
     fn row(id: i64, title: &str) -> StreamRow {
@@ -611,7 +633,7 @@ mod tests {
         let adapter = Arc::new(SubSearchAdapter::default());
         let mut state = SubSearchState::default();
         assert!(state.run(&adapter, SubSearchCmd::Open {
-            sid: ServerId::from_raw(1), rk: "506548".into(), lang: lang.into() }));
+            sid: ServerId::from_raw(1), rk: "506548".into(), lang: lang.into(), filename: String::new() }));
         (state, adapter)
     }
 
@@ -685,7 +707,7 @@ mod tests {
         let (mut state, adapter) = ready(vec![hit("/library/streams/1", "a", 5)]);
         let gen = state.generation();
         assert!(!state.run(&adapter, SubSearchCmd::Open {
-            sid: ServerId::from_raw(1), rk: "506548".into(), lang: "nld".into() }));
+            sid: ServerId::from_raw(1), rk: "506548".into(), lang: "nld".into(), filename: String::new() }));
         assert_eq!(state.generation(), gen);
         assert_eq!(state.view().hits().len(), 1);
     }
@@ -843,9 +865,9 @@ mod tests {
             "otherwise the newest");
     }
 
-    /// Best match first, but the server's order survives among ties.
+    /// Download popularity first before local matching; the server's order survives ties.
     #[test]
-    fn hits_rank_by_score_and_drop_rows_without_a_key() {
+    fn hits_rank_by_downloads_and_drop_rows_without_a_key() {
         let rows: Vec<plx_plex::plex::Stream> = serde_json::from_str::<plx_plex::plex::Envelope>(
             r#"{"MediaContainer":{"Stream":[
                 {"id":1,"key":"/library/streams/1","streamType":3,"score":"479","title":"a"},
@@ -855,6 +877,46 @@ mod tests {
             .unwrap().media_container.stream;
         let titles: Vec<String> = hits_of(&rows).into_iter().map(|h| h.title).collect();
         assert_eq!(titles, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn local_matching_beats_downloads_and_download_press_uses_the_ranked_key() {
+        let adapter = Arc::new(SubSearchAdapter::default());
+        let mut state = SubSearchState::default();
+        state.run(&adapter, SubSearchCmd::Open {
+            sid: ServerId::from_raw(1), rk: "movie".into(), lang: "en".into(),
+            filename: "Movie.2026.1080p.WEB-DL-GROUP.mkv".into(),
+        });
+        state.apply_for_test(Landing::Search(Ok(vec![
+            hit("popular", "Movie.2026.1080p.BluRay-OTHER", 20000),
+            hit("best", "Movie.2026.1080p.WEB-DL-GROUP", 500),
+            hit("tie-low", "Movie.2026.1080p.WEB-DL-GROUP", 10),
+            hit("tie-stable", "Movie.2026.1080p.WEB-DL-GROUP", 10),
+            hit("unknown", "", 999999),
+        ])));
+        let hits = state.view().hits();
+        assert_eq!(hits.iter().map(|h| h.key.as_str()).collect::<Vec<_>>(),
+            ["best", "tie-low", "tie-stable", "popular", "unknown"]);
+        assert_eq!(hits[0].match_score, Some(100));
+        assert_eq!(hits[4].match_score, None);
+        assert!(state.run(&adapter, SubSearchCmd::Download { gen: state.generation(), hit: 0 }));
+        assert_eq!(state.job_for_test(), Some(Job::Download { key: "best".into() }));
+        assert_eq!(state.view().download(), Some(&DownloadPhase::Sending { hit: 0 }));
+    }
+
+    #[test]
+    fn language_labels_are_not_release_names_in_any_provider_language() {
+        let mut hits = vec![hit("language", "Nederlands", 2000)];
+        rank_hits(&mut hits, "Nederlands.2026.1080p.WEB-DL-GROUP.mkv");
+        assert_eq!(hits[0].match_score, None);
+    }
+
+    #[test]
+    fn a_missing_video_filename_preserves_popularity_order_and_unknown_scores() {
+        let mut hits = vec![hit("low", "Movie.2026", 2), hit("high", "Movie.2026", 20)];
+        rank_hits(&mut hits, "");
+        assert_eq!(hits.iter().map(|h| h.key.as_str()).collect::<Vec<_>>(), ["high", "low"]);
+        assert!(hits.iter().all(|h| h.match_score.is_none()));
     }
 
     #[test]

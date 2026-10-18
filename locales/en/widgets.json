@@ -933,6 +933,21 @@
       "number": "i64"
     }
   },
+  "widgets.tracks.search.match": {
+    "value": "Match: {number}/100",
+    "description": "Local release-name compatibility estimate out of 100, not a timing confidence or the provider download count.",
+    "args": {
+      "number": "i64"
+    }
+  },
+  "widgets.tracks.search.match_unavailable": {
+    "value": "Match: —",
+    "description": "No usable playing filename or subtitle release name; no score can be calculated."
+  },
+  "widgets.tracks.search.match_note": {
+    "value": "Release-name estimate. Subtitle timing is not verified.",
+    "description": "Explains the release-name score without promising subtitle timing accuracy."
+  },
   "widgets.tracks.search.results": {
     "value": "Results",
     "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Section header above the subtitles the server found."

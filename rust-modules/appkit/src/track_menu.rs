@@ -1470,10 +1470,13 @@ impl TrackMenuState {
                 _ => None,
             };
             let title = if h.title.is_empty() { h.language.clone() } else { h.title.clone() };
-            // Plex's legacy `score` field carries OpenSubtitles download count, not match quality.
-            // Lead the detail with it so a long provider/language cannot hide the count.
-            let downloads = msg::widgets_tracks_search_downloads(h.score);
-            let detail: Vec<&str> = [downloads.as_str(), h.provider.as_str(), h.language.as_str()]
+            // Keep the local estimate distinct from Plex's legacy score/download field.
+            let matching = match h.match_score {
+                Some(score) => msg::widgets_tracks_search_match(i64::from(score)),
+                None => msg::widgets_tracks_search_match_unavailable().to_string(),
+            };
+            let downloads = msg::widgets_tracks_search_downloads(h.downloads);
+            let detail: Vec<&str> = [matching.as_str(), downloads.as_str(), h.provider.as_str(), h.language.as_str()]
                 .into_iter().filter(|p| !p.is_empty()).collect();
             let mut row = Row::new(title).server_label();
             if !detail.is_empty() {
@@ -1513,6 +1516,7 @@ impl TrackMenuState {
         } else {
             file.server_note(self.playing_filename.clone())
         };
+        let file = file.note(msg::widgets_tracks_search_match_note());
         Form::new().section(top).section(file).section(results)
     }
 
@@ -6906,7 +6910,7 @@ mod motion_tests {
 
     fn hit(title: &str) -> SubHit {
         SubHit { key: format!("/library/streams/{title}"), title: title.into(), provider: "OpenSubtitles".into(),
-            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), score: 1,
+            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), downloads: 1, match_score: None,
             hearing_impaired: false, forced: false }
     }
 
@@ -6969,14 +6973,15 @@ mod motion_tests {
     fn subtitle_search_download_count_keeps_the_install_status_and_release_name() {
         let _g = plx_base::testlock::serial();
         let _language = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-        let candidate = SubHit { score: 2301, ..hit("Movie.2026.1080p.WEB-DL.GROUP") };
+        let candidate = SubHit { match_score: Some(95), downloads: 2301, ..hit("Movie.2026.1080p.WEB-DL.GROUP") };
         let (menu, _) = on_search_page(snap(SearchStatus::Ready, None, vec![candidate],
             DownloadPhase::Sending { hit: 0 }));
         let i = menu.form.index_of(&TrackRow::SearchHit(0)).unwrap();
         let row = menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap();
         assert_eq!(row.label, "Movie.2026.1080p.WEB-DL.GROUP");
         let expected = plx_platform::i18n::msg::widgets_tracks_search_downloads(2301);
-        assert!(row.detail.starts_with(&expected));
+        assert!(row.detail.starts_with(&plx_platform::i18n::msg::widgets_tracks_search_match(95)));
+        assert!(row.detail.contains(&expected));
         assert!(row.detail.contains("OpenSubtitles · Nederlands"));
         assert_eq!(row.value.as_deref(), Some(plx_platform::i18n::msg::widgets_tracks_search_adding()));
         assert_eq!(menu.ids(), [TrackRow::SearchLang, TrackRow::SearchHit(0)],
@@ -7006,6 +7011,21 @@ mod motion_tests {
     }
 
     #[test]
+    fn subtitle_search_long_unbroken_filename_grows_the_note_instead_of_eliding() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, _) = on_search_page(snap(SearchStatus::Ready, None, vec![], DownloadPhase::None));
+        menu.playing_filename = "電影.Very.Long.Movie.Name.2026.1080p.WEB-DL.x264-GROUP.mkv".repeat(2);
+        let form = menu.search_form();
+        let mut table = TrackTable::new(BAND_BASE);
+        table.set(form, None);
+        table.table.fit_notes(620.0, &plx_base::fontcov::advances::ShippedMeasure);
+        let filename = &table.table.sections[1].rows[0];
+        assert_eq!(filename.label, menu.playing_filename);
+        assert!(filename.note_lines.get() > 1, "all filename characters must wrap onto more lines");
+        assert_eq!(table.focusable_len(), 1, "the filename is still inert");
+    }
+
+    #[test]
     fn subtitle_search_filename_fallback_and_download_states_fit_every_language() {
         let mut failures = Vec::new();
         for language in plx_platform::i18n::SHIPPED {
@@ -7014,7 +7034,7 @@ mod motion_tests {
             for download in [DownloadPhase::None, DownloadPhase::Sending { hit: 0 },
                 DownloadPhase::Unconfirmed { hit: 0 }, DownloadPhase::Failed { hit: 0, denied: false }] {
                 let (menu, _) = on_search_page(snap(SearchStatus::Ready, None,
-                    vec![SubHit { score: 123456789, ..hit("release") }], download));
+                    vec![SubHit { match_score: Some(100), downloads: 123456789, ..hit("release") }], download));
                 let file = &menu.form.table.sections[1].rows[0];
                 assert_eq!(file.label, plx_platform::i18n::msg::widgets_tracks_search_filename_unavailable());
                 assert_eq!(file.label_origin, plx_ui::table::Origin::App);
