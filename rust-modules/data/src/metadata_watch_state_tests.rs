@@ -301,6 +301,7 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
         sid: SRV_A,
         rk: "42".into(),
         audio: audio.clone(),
+        file: "/media/Played.Movie.2026.mkv".into(),
         width: 3840,
         height: 2160,
         ..Default::default()
@@ -313,6 +314,7 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
         "the store records where it came from"
     );
     assert_eq!(hit.audio.first().map(|s| s.id), Some(7));
+    assert_eq!(hit.file, "/media/Played.Movie.2026.mkv");
 
     assert!(
         cached_playing(test_state(), SRV_B, "42").is_none(),
@@ -354,6 +356,17 @@ fn the_playing_item_carries_its_plex_type() {
         "",
         "an item the server did not return has no type"
     );
+}
+
+#[test]
+fn the_playing_item_carries_the_original_primary_part_filename() {
+    let item: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({
+        "Media": [{"Part": [{"file": "/media/電影.2026.WEB-DL.mkv"}]}]
+    })).unwrap();
+    assert_eq!(playing_item_from(SRV_A, "42", Some(&item)).file, "/media/電影.2026.WEB-DL.mkv");
+    assert!(playing_item_from(SRV_A, "42", None).file.is_empty());
+    let missing_part: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(playing_item_from(SRV_A, "42", Some(&missing_part)).file.is_empty());
 }
 
 /// `PlayingItem.hdr` is the played leaf's video HDR flag (PQ or HLG transfer), the fact the

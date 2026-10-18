@@ -1153,6 +1153,28 @@ Types observed across every row: `id`/`streamType` int, `canAutoSync` bool, **ev
 string — `score` included**. `score` is `"2301"`, never `2301`, so it needs the lenient integer
 adapter; a strict field here fails the whole container and the screen shows no results at all.
 
+**`score` now means download count, not match quality.** Plex's
+[OpenSubtitles backend announcement](https://forums.plex.tv/t/subtitle-search-update-opensubtitles/862746)
+explains that the new provider API removed the old score and Plex passes the result's download
+count in its place. The Search page labels it Downloads and shows the playing leaf's original
+filename above the candidates for release-name comparison.
+
+The fork also calculates a **local release-name match estimate out of 100**, independent of that
+provider field (`data/src/subsearch/release_match.rs`). It awards up to 35 points for title-word
+Dice overlap, 25 for the same episode (or movie year), 20 for source, 15 for a hyphen-suffixed
+release group, and 5 for resolution. Missing evidence earns no points. Explicit episode conflicts (or movie-year conflicts)
+score zero; edition differences cap the score at 20, source conflicts at 45, and a
+missing episode identity on either side at 35. Substantially different titles are capped at 25.
+Case, separators, common filename extensions, `S01E02`/`1x02`, and `4K`/`2160p` are normalized.
+Only recognized name patterns count: this is a heuristic, with no media hash, runtime, FPS,
+subtitle-content inspection or timing verification. Even 100 is not proof of synchronization.
+Unusable filenames or release titles show an unavailable score instead of a fabricated zero.
+
+Results are stably sorted by download count, then the local estimate, then Plex's original order.
+Unknown estimates sort after known estimates only when download counts tie. If the playing filename is missing, all estimates are unavailable
+and the download ordering remains. Ranking happens once before result indices become download
+identities, so choosing a row downloads the key belonging to that displayed release.
+
 **TRAP — a 3-letter language code returns HTTP 500.** `language=en` answers 200; `language=eng` and
 `language=nld` answer a **bare-HTML `500 Internal Server Error`** (an unhandled server exception,
 not a Plex error body). The client must therefore send the 2-letter primary subtag, even though the

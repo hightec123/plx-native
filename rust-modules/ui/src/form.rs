@@ -184,9 +184,14 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         self.push(Slot::Inert(Row::separator()));
         self
     }
-    /// A one-line informational note: consumes a layout index, never focusable, never bound.
+    /// A wrapped informational note: consumes a layout index, never focusable, never bound.
     pub fn note(mut self, text: impl Into<String>) -> Self {
         self.push(Slot::Inert(Row::note(text)));
+        self
+    }
+    /// Wrapped server/user text, with no focus stop or activation binding.
+    pub fn server_note(mut self, text: impl Into<String>) -> Self {
+        self.push(Slot::Inert(Row::note(text).server_label()));
         self
     }
 }

@@ -541,6 +541,8 @@ pub struct TrackMenuState {
     /// without the item in hand. A copy, refreshed wherever the subs list is re-read, so a
     /// subtitle that lands (or is replaced) while the page is up marks its hit at once.
     item_sidecars: Vec<metadata::Stream>,
+    /// Basename from the playing leaf, never from the currently browsed Detail.
+    playing_filename: String,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -699,6 +701,7 @@ impl TrackMenuState {
             search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
             search_watching: false,
             item_sidecars: Vec::new(),
+            playing_filename: String::new(),
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -869,6 +872,9 @@ impl TrackMenuState {
         self.forced_only = Self::derive_forced_only(ps);
         self.forced_lang = plx_media::route::forced_only_lang(ps).to_string();
         self.read_item_sidecars(meta);
+        self.playing_filename = tracks(meta)
+            .and_then(|item| item.file.rsplit(['/', '\\']).next())
+            .unwrap_or_default().to_string();
     }
 
     /// Is the playback in Forced only? The route owns that fact (`cur_sub_mode`): the drawn forced
@@ -1464,8 +1470,14 @@ impl TrackMenuState {
                 _ => None,
             };
             let title = if h.title.is_empty() { h.language.clone() } else { h.title.clone() };
-            let detail: Vec<&str> =
-                [h.provider.as_str(), h.language.as_str()].into_iter().filter(|p| !p.is_empty()).collect();
+            // Keep the local estimate distinct from Plex's legacy score/download field.
+            let matching = match h.match_score {
+                Some(score) => msg::widgets_tracks_search_match(i64::from(score)),
+                None => msg::widgets_tracks_search_match_unavailable().to_string(),
+            };
+            let downloads = msg::widgets_tracks_search_downloads(h.downloads);
+            let detail: Vec<&str> = [matching.as_str(), downloads.as_str(), h.provider.as_str(), h.language.as_str()]
+                .into_iter().filter(|p| !p.is_empty()).collect();
             let mut row = Row::new(title).server_label();
             if !detail.is_empty() {
                 row = row.detail(detail.join(" \u{b7} ")).server_detail();
@@ -1498,7 +1510,14 @@ impl TrackMenuState {
         if matches!(s.download, DownloadPhase::Failed { .. }) {
             results = results.note(msg::widgets_tracks_search_add_failed_note());
         }
-        Form::new().section(top).section(results)
+        let file = FormSection::new(msg::widgets_tracks_search_video_file());
+        let file = if self.playing_filename.is_empty() {
+            file.note(msg::widgets_tracks_search_filename_unavailable())
+        } else {
+            file.server_note(self.playing_filename.clone())
+        };
+        let file = file.note(msg::widgets_tracks_search_match_note());
+        Form::new().section(top).section(file).section(results)
     }
 
     /// The language page: every language the search can use, the one being searched checked.
@@ -5395,6 +5414,7 @@ mod focus_tests {
             search: None,
             search_watching: false,
             item_sidecars: Vec::new(),
+            playing_filename: String::new(),
         }
     }
 
@@ -6890,7 +6910,7 @@ mod motion_tests {
 
     fn hit(title: &str) -> SubHit {
         SubHit { key: format!("/library/streams/{title}"), title: title.into(), provider: "OpenSubtitles".into(),
-            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), score: 1,
+            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), downloads: 1, match_score: None,
             hearing_impaired: false, forced: false }
     }
 
@@ -6947,6 +6967,82 @@ mod motion_tests {
         assert!(menu.wants_search());
         assert_eq!(menu.ids(), [TrackRow::SearchLang], "searching: nothing to list yet");
         assert_eq!(menu.form.selected_id(), Some(&TrackRow::SearchLang));
+    }
+
+    #[test]
+    fn subtitle_search_download_count_keeps_the_install_status_and_release_name() {
+        let _g = plx_base::testlock::serial();
+        let _language = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let candidate = SubHit { match_score: Some(95), downloads: 2301, ..hit("Movie.2026.1080p.WEB-DL.GROUP") };
+        let (menu, _) = on_search_page(snap(SearchStatus::Ready, None, vec![candidate],
+            DownloadPhase::Sending { hit: 0 }));
+        let i = menu.form.index_of(&TrackRow::SearchHit(0)).unwrap();
+        let row = menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap();
+        assert_eq!(row.label, "Movie.2026.1080p.WEB-DL.GROUP");
+        let expected = plx_platform::i18n::msg::widgets_tracks_search_downloads(2301);
+        assert!(row.detail.starts_with(&plx_platform::i18n::msg::widgets_tracks_search_match(95)));
+        assert!(row.detail.contains(&expected));
+        assert!(row.detail.contains("OpenSubtitles · Nederlands"));
+        assert_eq!(row.value.as_deref(), Some(plx_platform::i18n::msg::widgets_tracks_search_adding()));
+        assert_eq!(menu.ids(), [TrackRow::SearchLang, TrackRow::SearchHit(0)],
+            "the filename adds no focus stop or download action");
+    }
+
+    #[test]
+    fn subtitle_search_filename_is_the_playing_basename_and_wraps_without_an_action() {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        for path in ["/private/media/電影.2026.1080p.WEB-DL.GROUP.mkv",
+            "D:\\private\\media\\電影.2026.1080p.WEB-DL.GROUP.mkv"] {
+            let mut item = metadata::PlayingItem::with_subs(Vec::new());
+            item.file = path.into();
+            let mut store = plx_data::stores::metadata::MetadataStore::default();
+            store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item)));
+            let menu = TrackMenuState::new_with(&ps, store.view(), 1, Vec::new(), true);
+            let form = menu.search_form();
+            let mut table = TrackTable::new(BAND_BASE);
+            table.set(form, None);
+            let file = &table.table.sections[1].rows[0];
+            assert_eq!(file.label, "電影.2026.1080p.WEB-DL.GROUP.mkv");
+            assert!(file.is_note(), "the full filename wraps rather than eliding");
+            assert_eq!(file.label_origin, plx_ui::table::Origin::Server);
+            assert_eq!(table.focusable_len(), 1, "no focus stop on the filename");
+        }
+    }
+
+    #[test]
+    fn subtitle_search_long_unbroken_filename_grows_the_note_instead_of_eliding() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, _) = on_search_page(snap(SearchStatus::Ready, None, vec![], DownloadPhase::None));
+        menu.playing_filename = "電影.Very.Long.Movie.Name.2026.1080p.WEB-DL.x264-GROUP.mkv".repeat(2);
+        let form = menu.search_form();
+        let mut table = TrackTable::new(BAND_BASE);
+        table.set(form, None);
+        table.table.fit_notes(620.0, &plx_base::fontcov::advances::ShippedMeasure);
+        let filename = &table.table.sections[1].rows[0];
+        assert_eq!(filename.label, menu.playing_filename);
+        assert!(filename.note_lines.get() > 1, "all filename characters must wrap onto more lines");
+        assert_eq!(table.focusable_len(), 1, "the filename is still inert");
+    }
+
+    #[test]
+    fn subtitle_search_filename_fallback_and_download_states_fit_every_language() {
+        let mut failures = Vec::new();
+        for language in plx_platform::i18n::SHIPPED {
+            let _g = plx_base::testlock::serial();
+            let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+            for download in [DownloadPhase::None, DownloadPhase::Sending { hit: 0 },
+                DownloadPhase::Unconfirmed { hit: 0 }, DownloadPhase::Failed { hit: 0, denied: false }] {
+                let (menu, _) = on_search_page(snap(SearchStatus::Ready, None,
+                    vec![SubHit { match_score: Some(100), downloads: 123456789, ..hit("release") }], download));
+                let file = &menu.form.table.sections[1].rows[0];
+                assert_eq!(file.label, plx_platform::i18n::msg::widgets_tracks_search_filename_unavailable());
+                assert_eq!(file.label_origin, plx_ui::table::Origin::App);
+                failures.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+                failures.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+            }
+        }
+        plx_ui::table::assert_no_fit_failures(&failures);
     }
 
     /// Results land in place, and a press quotes the generation they were published under — the

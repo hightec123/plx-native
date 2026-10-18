@@ -863,10 +863,11 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                             let ours = view.item().is_some_and(|item| plx_plex::plex::same_item(item, (sid, &rk)));
                             if p.wants_search() && !ours {
                                 let lang = search_default_lang(ps, H::metadata(cx));
+                                let filename = H::metadata(cx).playing().map(|item| item.file.clone()).unwrap_or_default();
                                 fx.push(Fx::App(AppFx::Store(
                                     plx_data::stores::StoreId::SubtitleSearch,
                                     plx_data::stores::StoreCmd::SubtitleSearch(
-                                        plx_data::subsearch::SubSearchCmd::Open { sid, rk: rk.clone(), lang },
+                                        plx_data::subsearch::SubSearchCmd::Open { sid, rk: rk.clone(), lang, filename },
                                     ),
                                 )));
                             }
