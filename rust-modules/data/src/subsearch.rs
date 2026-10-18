@@ -57,6 +57,7 @@ pub struct SubHit {
     /// The server's 3-letter code ("nld"). Display/matching only — never sent back as a query.
     pub language_code: String,
     pub codec: String,
+    /// Plex's legacy `score` field now carries OpenSubtitles download count, not match quality.
     pub score: i64,
     pub hearing_impaired: bool,
     pub forced: bool,
@@ -537,7 +538,7 @@ fn subtitle_rows(client: &Client, rk: &str) -> Option<Vec<StreamRow>> {
         .collect())
 }
 
-/// Project the agent's rows into hits, best score first. The sort is STABLE, so the server's own
+/// Project the agent's rows into hits, highest download count first. The sort is STABLE, so the server's own
 /// order survives among equal scores. A row without a key cannot be downloaded and is dropped.
 pub fn hits_of(rows: &[plx_plex::plex::Stream]) -> Vec<SubHit> {
     let mut hits: Vec<SubHit> = rows.iter()

@@ -1153,6 +1153,12 @@ Types observed across every row: `id`/`streamType` int, `canAutoSync` bool, **ev
 string — `score` included**. `score` is `"2301"`, never `2301`, so it needs the lenient integer
 adapter; a strict field here fails the whole container and the screen shows no results at all.
 
+**`score` now means download count, not match quality.** Plex's
+[OpenSubtitles backend announcement](https://forums.plex.tv/t/subtitle-search-update-opensubtitles/862746)
+explains that the new provider API removed the old score and Plex passes the result's download
+count in its place. The Search page labels it Downloads, keeps the existing descending order,
+and shows the playing leaf's original filename above the candidates for release-name comparison.
+
 **TRAP — a 3-letter language code returns HTTP 500.** `language=en` answers 200; `language=eng` and
 `language=nld` answer a **bare-HTML `500 Internal Server Error`** (an unhandled server exception,
 not a Plex error body). The client must therefore send the 2-letter primary subtag, even though the

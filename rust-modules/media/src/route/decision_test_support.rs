@@ -418,6 +418,7 @@ pub(super) fn fourk_item_with_subs(
         rk: "rk-4k".into(),
         show_rk: String::new(),
         kind: String::new(),
+        file: String::new(),
         audio,
         subs,
         video_fps: 23.976,

@@ -702,7 +702,8 @@ pub struct Stream {
     /// library stream carries no provider and must not be read as one.
     #[serde(rename = "providerTitle", default, deserialize_with = "de_str")]
     pub provider_title: String,
-    /// Subtitle search only: the candidate's match score, best-first when the UI ranks by it.
+    /// Subtitle search only: Plex's legacy `score` field. Its OpenSubtitles backend now returns
+    /// download count here, not a match-quality score (docs/pms-api.md §8).
     ///
     /// **`de_i64` is load-bearing here, not tidiness.** PMS sends this as a JSON *string*
     /// (`"2301"`) on every row measured 2026-10-04 — never a number. A strict `i64` would fail

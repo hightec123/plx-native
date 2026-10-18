@@ -918,6 +918,21 @@
     "value": "Language",
     "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row that shows and changes the language being searched; also the language list's title."
   },
+  "widgets.tracks.search.video_file": {
+    "value": "Playing video",
+    "description": "Heading above subtitle-search results showing the playing video filename, not the server directory."
+  },
+  "widgets.tracks.search.filename_unavailable": {
+    "value": "Filename unavailable",
+    "description": "Shown when Plex did not supply the playing video filename."
+  },
+  "widgets.tracks.search.downloads": {
+    "value": "Downloads: {number}",
+    "description": "Subtitle-search result detail. Plex returns OpenSubtitles download count in its legacy score field; this is not a match score.",
+    "args": {
+      "number": "i64"
+    }
+  },
   "widgets.tracks.search.results": {
     "value": "Results",
     "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Section header above the subtitles the server found."

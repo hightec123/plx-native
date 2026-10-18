@@ -189,6 +189,11 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         self.push(Slot::Inert(Row::note(text)));
         self
     }
+    /// Wrapped server/user text, with no focus stop or activation binding.
+    pub fn server_note(mut self, text: impl Into<String>) -> Self {
+        self.push(Slot::Inert(Row::note(text).server_label()));
+        self
+    }
 }
 impl<Id: FormId, A, Dest> FormSection<Id, A, Dest> {
     /// A focusable row; its key comes from [`FormId::key`].
