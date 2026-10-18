@@ -1186,6 +1186,11 @@ grouping key is the lexicographically smallest spelling, which for Dutch is `"du
 candidates were `/library/streams/1929511…14` on one call and `…1929520…23` on the next. A download
 issued with a key from an earlier search answers **200 and silently does nothing**. A key is only
 valid for the search that produced it, so the app must never cache or persist one across searches.
+The in-memory search cache is also scoped to the app-owned playback session, not just server/item:
+Retry or starting the same film again must discard old candidate keys and Installed/Added status.
+The Search page obtains fresh results on its next open; simply reopening the menu during the same
+playback retains its cached answer. A refreshed playing item may no longer list a previously
+downloaded external track, so an old Added badge is not evidence that the file still exists.
 
 ### Download — `PUT /library/metadata/{rk}/subtitles?key={candidate key}`
 
