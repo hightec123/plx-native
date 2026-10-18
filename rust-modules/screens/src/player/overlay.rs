@@ -858,23 +858,30 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                             let (sid, rk) = (plx_media::route::cur_sid(ps), plx_media::route::cur_rk(ps));
                             // opened LAZILY: only once the viewer is on the Search pages, so opening
                             // the menu never puts a query to the server's subtitle agent. `Open` is
-                            // idempotent for the same item, so re-sending it until the store's view
-                            // catches up is harmless.
-                            let ours = view.item().is_some_and(|item| plx_plex::plex::same_item(item, (sid, &rk)));
-                            if p.wants_search() && !ours {
-                                let lang = search_default_lang(ps, H::metadata(cx));
+                            // idempotent within this playback. A new resolve (including Retry)
+                            // has another session id, so its old Added state and candidate keys
+                            // cannot leak into the new playing item.
+                            let playback_session = plx_media::route::sess(ps);
+                            let snapshot = view.snapshot_for(sid, &rk, &playback_session);
+                            if p.wants_search() && snapshot.status == plx_data::subsearch::SearchStatus::Idle {
+                                let same_item = view.item().is_some_and(|item| plx_plex::plex::same_item(item, (sid, &rk)));
+                                let lang = if same_item && !view.lang().is_empty() {
+                                    view.lang().to_string()
+                                } else {
+                                    search_default_lang(ps, H::metadata(cx))
+                                };
                                 let filename = H::metadata(cx).playing().map(|item| item.file.clone()).unwrap_or_default();
                                 fx.push(Fx::App(AppFx::Store(
                                     plx_data::stores::StoreId::SubtitleSearch,
                                     plx_data::stores::StoreCmd::SubtitleSearch(
-                                        plx_data::subsearch::SubSearchCmd::Open { sid, rk: rk.clone(), lang, filename },
+                                        plx_data::subsearch::SubSearchCmd::Open { sid, rk: rk.clone(), lang, filename, playback_session },
                                     ),
                                 )));
                             }
                             // the store lands, polls an install and spawns only while it is pumped,
                             // and this panel is what pumps it
                             fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::SubtitleSearch)));
-                            p.set_search(view.snapshot_for(sid, &rk));
+                            p.set_search(snapshot);
                             // the download landed: list it on the playing item, then select it by
                             // the same request a pick on its row makes, and close like any pick
                             if let Some((stream, commit)) = p.take_search_commit() {

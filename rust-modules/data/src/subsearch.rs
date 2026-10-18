@@ -129,9 +129,9 @@ impl DownloadPhase {
 /// Every mutation of the subtitle-search model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubSearchCmd {
-    /// Open (or keep) the search for one item. Idempotent for the same item, filename and language, so the
+    /// Open (or keep) the search for one item. Idempotent within the same playback, item, filename and language, so the
     /// menu re-opening shows the answer already paid for instead of searching again.
-    Open { sid: ServerId, rk: String, lang: String, filename: String },
+    Open { sid: ServerId, rk: String, lang: String, filename: String, playback_session: String },
     /// Search again in another language. Refused while a download is busy.
     SetLanguage(String),
     /// Install hit `hit` of the result set published under generation `gen`. Refused when that set
@@ -149,6 +149,8 @@ struct Open {
     sid: ServerId,
     rk: String,
     filename: String,
+    /// App-owned playback identity: a retry/new play invalidates old candidate keys and Added state.
+    playback_session: String,
     /// The folded 2-letter code; empty only when the fold failed.
     lang: String,
     status: SearchStatus,
@@ -158,8 +160,8 @@ struct Open {
 }
 
 impl Open {
-    fn new(sid: ServerId, rk: String, lang: &str, filename: String) -> Self {
-        let mut open = Open { sid, rk, filename, lang: String::new(), status: SearchStatus::Searching,
+    fn new(sid: ServerId, rk: String, lang: &str, filename: String, playback_session: String) -> Self {
+        let mut open = Open { sid, rk, filename, playback_session, lang: String::new(), status: SearchStatus::Searching,
             failure: None, hits: Vec::new(), download: DownloadPhase::None };
         open.search_for(lang);
         open
@@ -228,11 +230,12 @@ impl<'a> SubSearchView<'a> {
     /// Nothing open — what a host that offers no subtitle search hands a screen.
     pub const IDLE: SubSearchView<'static> = SubSearchView { open: None, gen: 0 };
 
-    /// An owned, comparable copy of the model AS IT CONCERNS `(sid, rk)`: the model holds one item
+    /// An owned, comparable copy for `(sid, rk, playback_session)`: the model holds one playback
     /// (the last one searched), and a search that belongs to a different item — the previous
-    /// episode's — must read as nothing open, never as this item's results.
-    pub fn snapshot_for(self, sid: ServerId, rk: &str) -> SubSearchSnapshot {
-        let mine = self.open.filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, rk)));
+    /// episode's — or the same film before Retry — must read as nothing open.
+    pub fn snapshot_for(self, sid: ServerId, rk: &str, playback_session: &str) -> SubSearchSnapshot {
+        let mine = self.open.filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, rk))
+            && o.playback_session == playback_session);
         match mine {
             None => SubSearchSnapshot::idle(self.gen),
             Some(o) => SubSearchSnapshot {
@@ -286,15 +289,16 @@ impl SubSearchState {
 
     pub fn run(&mut self, adapter: &SubSearchAdapter, cmd: SubSearchCmd) -> bool {
         match cmd {
-            SubSearchCmd::Open { sid, rk, lang, filename } => {
+            SubSearchCmd::Open { sid, rk, lang, filename, playback_session } => {
                 if let Some(open) = self.open.as_ref()
-                    .filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, &rk)) && o.filename == filename) {
+                    .filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, &rk)) && o.filename == filename
+                        && o.playback_session == playback_session) {
                     // the same item: keep the answer unless the language really changed
                     if fold_language(&lang).unwrap_or_default() == open.lang { return false; }
                     return self.run(adapter, SubSearchCmd::SetLanguage(lang));
                 }
                 self.supersede(adapter);
-                self.open = Some(Open::new(sid, rk, &lang, filename));
+                self.open = Some(Open::new(sid, rk, &lang, filename, playback_session));
                 true
             }
             SubSearchCmd::SetLanguage(lang) => {
@@ -633,7 +637,7 @@ mod tests {
         let adapter = Arc::new(SubSearchAdapter::default());
         let mut state = SubSearchState::default();
         assert!(state.run(&adapter, SubSearchCmd::Open {
-            sid: ServerId::from_raw(1), rk: "506548".into(), lang: lang.into(), filename: String::new() }));
+            sid: ServerId::from_raw(1), rk: "506548".into(), lang: lang.into(), filename: String::new(), playback_session: "play-1".into() }));
         (state, adapter)
     }
 
@@ -707,7 +711,7 @@ mod tests {
         let (mut state, adapter) = ready(vec![hit("/library/streams/1", "a", 5)]);
         let gen = state.generation();
         assert!(!state.run(&adapter, SubSearchCmd::Open {
-            sid: ServerId::from_raw(1), rk: "506548".into(), lang: "nld".into(), filename: String::new() }));
+            sid: ServerId::from_raw(1), rk: "506548".into(), lang: "nld".into(), filename: String::new(), playback_session: "play-1".into() }));
         assert_eq!(state.generation(), gen);
         assert_eq!(state.view().hits().len(), 1);
     }
@@ -885,7 +889,7 @@ mod tests {
         let mut state = SubSearchState::default();
         state.run(&adapter, SubSearchCmd::Open {
             sid: ServerId::from_raw(1), rk: "movie".into(), lang: "en".into(),
-            filename: "Movie.2026.1080p.WEB-DL-GROUP.mkv".into(),
+            filename: "Movie.2026.1080p.WEB-DL-GROUP.mkv".into(), playback_session: "play-1".into(),
         });
         state.apply_for_test(Landing::Search(Ok(vec![
             hit("popular", "Movie.2026.1080p.BluRay-OTHER", 20000),
@@ -914,6 +918,35 @@ mod tests {
         assert_eq!(hits[0].key, "popular");
         assert_eq!(hits[0].match_score, None);
         assert_eq!(hits[1].match_score, Some(100));
+    }
+
+    /// Device regression: Retry re-opened the same item with no external streams, but search
+    /// retained Installed and made the old release's Added button inert. A playback owns its keys.
+    #[test]
+    fn a_new_playback_of_the_same_item_drops_installed_status_and_ephemeral_keys() {
+        let (mut state, adapter) = ready(vec![hit("old-key", "release", 20000)]);
+        let sid = ServerId::from_raw(1);
+        let old_gen = state.generation();
+        state.run(&adapter, SubSearchCmd::Download { gen: old_gen, hit: 0 });
+        state.apply_for_test(Landing::Download(Ok(vec![])));
+        state.apply_for_test(Landing::Streams(Some(vec![row(7, "release")])));
+        assert!(matches!(state.view().snapshot_for(sid, "506548", "play-1").download,
+            DownloadPhase::Installed { .. }));
+        assert_eq!(state.view().snapshot_for(sid, "506548", "play-2").status,
+            SearchStatus::Idle, "never publish old Added state to the restarted playback");
+        assert!(state.run(&adapter, SubSearchCmd::Open {
+            sid, rk: "506548".into(), lang: "nl".into(), filename: String::new(),
+            playback_session: "play-2".into(),
+        }), "a retry of the same item needs a new result generation");
+        assert_ne!(state.generation(), old_gen);
+        assert_eq!(state.view().download(), Some(&DownloadPhase::None));
+        assert!(state.view().hits().is_empty());
+        assert_eq!(state.job_for_test(), Some(Job::Search { lang: "nl".into() }));
+        state.apply_for_test(Landing::Search(Ok(vec![hit("new-key", "release", 20000)])));
+        assert!(!state.run(&adapter, SubSearchCmd::Download { gen: old_gen, hit: 0 }));
+        assert!(state.run(&adapter, SubSearchCmd::Download { gen: state.generation(), hit: 0 }),
+            "the original release can be downloaded again with its fresh key");
+        assert_eq!(state.job_for_test(), Some(Job::Download { key: "new-key".into() }));
     }
 
     #[test]
