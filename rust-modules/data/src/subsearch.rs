@@ -577,8 +577,8 @@ fn rank_hits(hits: &mut [SubHit], filename: &str) {
             release_match::score(filename, &hit.title)
         };
     }
-    hits.sort_by(|a, b| b.match_score.cmp(&a.match_score)
-        .then_with(|| b.downloads.cmp(&a.downloads)));
+    hits.sort_by(|a, b| b.downloads.cmp(&a.downloads)
+        .then_with(|| b.match_score.cmp(&a.match_score)));
 }
 
 struct Mail { gen: u32, what: Landing }
@@ -880,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn local_matching_beats_downloads_and_download_press_uses_the_ranked_key() {
+    fn downloads_win_then_matching_breaks_ties_and_download_uses_the_ranked_key() {
         let adapter = Arc::new(SubSearchAdapter::default());
         let mut state = SubSearchState::default();
         state.run(&adapter, SubSearchCmd::Open {
@@ -892,16 +892,28 @@ mod tests {
             hit("best", "Movie.2026.1080p.WEB-DL-GROUP", 500),
             hit("tie-low", "Movie.2026.1080p.WEB-DL-GROUP", 10),
             hit("tie-stable", "Movie.2026.1080p.WEB-DL-GROUP", 10),
-            hit("unknown", "", 999999),
+            hit("same-count-worse-match", "Movie.2026.1080p.BluRay-OTHER", 500),
+            hit("unknown", "", 1),
         ])));
         let hits = state.view().hits();
         assert_eq!(hits.iter().map(|h| h.key.as_str()).collect::<Vec<_>>(),
-            ["best", "tie-low", "tie-stable", "popular", "unknown"]);
-        assert_eq!(hits[0].match_score, Some(100));
-        assert_eq!(hits[4].match_score, None);
+            ["popular", "best", "same-count-worse-match", "tie-low", "tie-stable", "unknown"]);
+        assert_eq!(hits[0].match_score, Some(45));
+        assert_eq!(hits[1].match_score, Some(100));
+        assert_eq!(hits[5].match_score, None);
         assert!(state.run(&adapter, SubSearchCmd::Download { gen: state.generation(), hit: 0 }));
-        assert_eq!(state.job_for_test(), Some(Job::Download { key: "best".into() }));
+        assert_eq!(state.job_for_test(), Some(Job::Download { key: "popular".into() }));
         assert_eq!(state.view().download(), Some(&DownloadPhase::Sending { hit: 0 }));
+    }
+
+    #[test]
+    fn downloads_take_priority_even_when_a_match_score_is_unavailable() {
+        let mut hits = vec![hit("matching", "Movie.2026.1080p.WEB-DL-GROUP", 500),
+            hit("popular", "", 20000)];
+        rank_hits(&mut hits, "Movie.2026.1080p.WEB-DL-GROUP.mkv");
+        assert_eq!(hits[0].key, "popular");
+        assert_eq!(hits[0].match_score, None);
+        assert_eq!(hits[1].match_score, Some(100));
     }
 
     #[test]

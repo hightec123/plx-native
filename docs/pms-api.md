@@ -1170,8 +1170,8 @@ Only recognized name patterns count: this is a heuristic, with no media hash, ru
 subtitle-content inspection or timing verification. Even 100 is not proof of synchronization.
 Unusable filenames or release titles show an unavailable score instead of a fabricated zero.
 
-Results are stably sorted by the local estimate, then download count, then Plex's original order;
-unknown estimates sort last. If the playing filename is missing, all estimates are unavailable
+Results are stably sorted by download count, then the local estimate, then Plex's original order.
+Unknown estimates sort after known estimates only when download counts tie. If the playing filename is missing, all estimates are unavailable
 and the download ordering remains. Ranking happens once before result indices become download
 identities, so choosing a row downloads the key belonging to that displayed release.
 
